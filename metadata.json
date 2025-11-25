@@ -1,0 +1,5 @@
+{
+  "name": "TaxEase Invoice Analyzer",
+  "description": "AI-powered invoice analysis tool that categorizes expenses for tax returns and exports summaries to Excel.",
+  "requestFramePermissions": []
+}
