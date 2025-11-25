@@ -44,3 +44,9 @@ export interface ProcessingStats {
   failed: number;
   totalValue: number;
 }
+
+export interface VendorRule {
+  id: string;
+  vendorNamePattern: string;
+  taxCategory: TaxCategory;
+}
