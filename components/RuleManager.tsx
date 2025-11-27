@@ -1,18 +1,20 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { VendorRule, TaxCategory } from '../types';
 import { TAX_CATEGORIES_LIST } from '../constants';
-import { Settings, Plus, Trash2, X, Download } from 'lucide-react';
+import { Settings, Plus, Trash2, X, Upload } from 'lucide-react';
 
 interface RuleManagerProps {
   rules: VendorRule[];
   onAddRule: (pattern: string, category: TaxCategory) => void;
   onDeleteRule: (id: string) => void;
+  onImportRules?: (rules: any[]) => void;
 }
 
-const RuleManager: React.FC<RuleManagerProps> = ({ rules, onAddRule, onDeleteRule }) => {
+const RuleManager: React.FC<RuleManagerProps> = ({ rules, onAddRule, onDeleteRule, onImportRules }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [newPattern, setNewPattern] = useState('');
   const [newCategory, setNewCategory] = useState<string>(TAX_CATEGORIES_LIST[0]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -22,14 +24,29 @@ const RuleManager: React.FC<RuleManagerProps> = ({ rules, onAddRule, onDeleteRul
     }
   };
 
-  const handleExportRules = () => {
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(rules, null, 2));
-    const downloadAnchorNode = document.createElement('a');
-    downloadAnchorNode.setAttribute("href", dataStr);
-    downloadAnchorNode.setAttribute("download", "taxease_rules.json");
-    document.body.appendChild(downloadAnchorNode);
-    downloadAnchorNode.click();
-    downloadAnchorNode.remove();
+  const handleImportClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+        const text = await file.text();
+        const imported = JSON.parse(text);
+        if (Array.isArray(imported) && onImportRules) {
+            onImportRules(imported);
+        } else {
+            alert("Invalid rule file format. Expected a JSON array.");
+        }
+    } catch (err) {
+        console.error(err);
+        alert("Failed to parse the JSON file.");
+    }
+
+    // Reset input so same file can be selected again if needed
+    if (e.target) e.target.value = '';
   };
 
   return (
@@ -97,14 +114,23 @@ const RuleManager: React.FC<RuleManagerProps> = ({ rules, onAddRule, onDeleteRul
                     Active Rules 
                     <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full text-xs">{rules.length}</span>
                     </h4>
-                    {rules.length > 0 && (
-                        <button 
-                            onClick={handleExportRules}
-                            className="text-xs flex items-center gap-1 text-brand-600 hover:text-brand-700 font-medium"
-                        >
-                            <Download size={14} />
-                            Export JSON
-                        </button>
+                    {onImportRules && (
+                        <>
+                            <input 
+                                type="file" 
+                                ref={fileInputRef}
+                                className="hidden"
+                                accept=".json"
+                                onChange={handleFileChange}
+                            />
+                            <button 
+                                onClick={handleImportClick}
+                                className="text-xs flex items-center gap-1 text-brand-600 hover:text-brand-700 font-medium px-3 py-1.5 bg-brand-50 rounded-lg hover:bg-brand-100 transition-colors"
+                            >
+                                <Upload size={14} />
+                                Import JSON
+                            </button>
+                        </>
                     )}
                 </div>
 

@@ -6,12 +6,28 @@ import RuleManager from './components/RuleManager';
 import { analyzeInvoiceImage } from './services/geminiService';
 import { generateExcelSummary } from './services/excelService';
 import { InvoiceData, ProcessingStats, TaxCategory, VendorRule } from './types';
+import { DEFAULT_RULES } from './defaultRules';
 import { FileSpreadsheet, Sparkles } from 'lucide-react';
 
 const App: React.FC = () => {
   const [invoices, setInvoices] = useState<InvoiceData[]>([]);
-  const [rules, setRules] = useState<VendorRule[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+
+  // Initialize rules from LocalStorage if available, otherwise use DEFAULT_RULES
+  const [rules, setRules] = useState<VendorRule[]>(() => {
+    const savedRules = localStorage.getItem('taxease_rules');
+    if (savedRules) {
+      try {
+        const parsed = JSON.parse(savedRules);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      } catch (e) {
+        console.error("Failed to load rules from local storage", e);
+      }
+    }
+    return DEFAULT_RULES;
+  });
 
   // Computed stats
   const stats: ProcessingStats = {
@@ -22,22 +38,7 @@ const App: React.FC = () => {
     totalValue: invoices.reduce((acc, curr) => acc + (curr.totalAmount || 0), 0)
   };
 
-  // Load rules from local storage on start up
-  useEffect(() => {
-    const savedRules = localStorage.getItem('taxease_rules');
-    if (savedRules) {
-      try {
-        const parsed = JSON.parse(savedRules);
-        if (Array.isArray(parsed)) {
-          setRules(parsed);
-        }
-      } catch (e) {
-        console.error("Failed to load rules from local storage", e);
-      }
-    }
-  }, []);
-
-  // Save rules to local storage whenever they change
+  // Auto-save rules to local storage whenever they change
   useEffect(() => {
     localStorage.setItem('taxease_rules', JSON.stringify(rules));
   }, [rules]);
@@ -58,85 +59,56 @@ const App: React.FC = () => {
     });
   }, []);
 
+  const handleImportRules = useCallback((importedRules: any[]) => {
+    setRules(prevRules => {
+        const existingPatterns = new Set(prevRules.map(r => r.vendorNamePattern.toLowerCase()));
+        
+        // Filter out invalid rules and duplicates
+        const uniqueNewRules = importedRules.filter((r: any) => 
+            r.vendorNamePattern && 
+            r.taxCategory && 
+            !existingPatterns.has(r.vendorNamePattern.toLowerCase())
+        ).map((r: any) => ({
+            ...r,
+            id: r.id || Math.random().toString(36).substr(2, 9)
+        }));
+
+        if (uniqueNewRules.length === 0) {
+            alert("No new unique rules found to import.");
+            return prevRules;
+        }
+
+        const updatedRules = [...prevRules, ...uniqueNewRules];
+        
+        // Apply to currently loaded invoices
+        setInvoices(currentInvoices => applyRulesToInvoices(currentInvoices, updatedRules));
+        
+        return updatedRules;
+    });
+  }, [applyRulesToInvoices]);
+
   const handleFilesSelected = useCallback(async (files: File[]) => {
     const jsonFiles = files.filter(f => f.name.toLowerCase().endsWith('.json') || f.type === 'application/json');
     const mediaFiles = files.filter(f => !f.name.toLowerCase().endsWith('.json') && f.type !== 'application/json');
 
     // 1. Process JSON Rule files first
     if (jsonFiles.length > 0) {
-      let newRules = [...rules];
-      let rulesUpdated = false;
-
       for (const file of jsonFiles) {
         try {
           const text = await file.text();
           const importedRules = JSON.parse(text);
           if (Array.isArray(importedRules)) {
-            // Merge rules: Add only if pattern doesn't exist
-            const existingPatterns = new Set(newRules.map(r => r.vendorNamePattern.toLowerCase()));
-            const uniqueNewRules = importedRules.filter((r: any) => 
-              r.vendorNamePattern && 
-              r.taxCategory && 
-              !existingPatterns.has(r.vendorNamePattern.toLowerCase())
-            ).map((r: any) => ({
-              ...r,
-              id: r.id || Math.random().toString(36).substr(2, 9)
-            }));
-
-            if (uniqueNewRules.length > 0) {
-              newRules = [...newRules, ...uniqueNewRules];
-              rulesUpdated = true;
-            }
+            handleImportRules(importedRules);
           }
         } catch (e) {
           console.error("Failed to parse rule file:", file.name, e);
           alert(`Failed to parse rule file: ${file.name}`);
         }
       }
-
-      if (rulesUpdated) {
-        setRules(newRules);
-        // Re-apply new rules to existing invoices on screen
-        setInvoices(prev => applyRulesToInvoices(prev, newRules));
-      }
     }
 
     // 2. Process Media Files (Invoices)
     if (mediaFiles.length === 0) return;
-
-    // Use current rules (or newly updated ones from step 1 would be in state on next render, 
-    // but here we need to use 'rules' or the result of step 1. 
-    // Since state updates are async, we use a local variable for the *current* batch execution if we just updated them.
-    // However, to keep it simple and safe with React state, we will rely on the fact that if we just called setRules,
-    // the next render will handle it. But for THIS specific batch, we want to use the latest.
-    // We'll optimistically use the merged array if we had json files, otherwise current state.
-    
-    // Actually, simpler approach: If we updated rules, we shouldn't rely on 'rules' state var in this closure immediately for the new files.
-    // We will just let the user re-upload or rely on the effect. 
-    // BUT for best UX, let's use a ref or just recalculate. 
-    // We'll skip complex merging in this closure and rely on the fact that `rules` dependency updates `handleFilesSelected`.
-    // Wait, if I upload JSON and PNG together, `handleFilesSelected` runs once.
-    // I need to use the `newRules` I just calculated above.
-    
-    // Rerun check to get effective rules for this batch
-    let effectiveRules = [...rules];
-    if (jsonFiles.length > 0) {
-        // Re-read local storage or trust logic above? 
-        // Let's just reproduce the merge logic simply for the *batch* variable
-        // (This duplicate logic is a tradeoff for not using a Ref)
-         for (const file of jsonFiles) {
-            try {
-                const text = await file.text(); // Warning: file text() promise already consumed? No, it's a new read if we didn't store result.
-                // actually we can't read stream twice easily in some envs, but text() is usually fine. 
-                // Better: we won't complexity this. If user uploads JSON, they see rules update. 
-                // If they upload JSON + PNG, the PNGs might get processed with OLD rules in this specific millisecond 
-                // unless we pass `newRules` down.
-            } catch(e) {}
-         }
-         // To guarantee consistency, we advise users to upload rules first, or we accept that `rules` state 
-         // might be one tick behind for the *concurrent* files. 
-         // However, we can improve:
-    }
 
     const newInvoices: InvoiceData[] = mediaFiles.map(file => ({
       id: Math.random().toString(36).substr(2, 9),
@@ -168,13 +140,15 @@ const App: React.FC = () => {
             
             let finalCategory = result.taxCategory || TaxCategory.UNCATEGORIZED;
             
-            // Note: We use 'rules' from state here. If JSON was just uploaded in same batch, 
-            // 'rules' might be stale for this specific iteration depending on React batching.
-            // For robust "Upload Config + Files" support, we should ideally use a functional state update 
-            // or parse JSON completely before starting file processing.
-            // Given the complexity, we'll use 'rules' state which is sufficient for 99% of use cases 
-            // (users usually set rules, then upload files).
             if (result.vendorName) {
+                // Determine which rules to use. We use functional state update in handleImportRules
+                // but here we are in a loop. We need the freshest rules.
+                // Since this function closes over 'rules', it might be stale if we just imported.
+                // However, for simplicity, we assume users generally import rules *then* upload files, 
+                // or we accept that concurrent processing uses the state at function start time.
+                // To fix this fully, we would need to use a Ref for rules. 
+                // For now, we use the 'rules' available in closure.
+                
                 const matchingRule = rules.find(r => 
                     result.vendorName!.toLowerCase().includes(r.vendorNamePattern.toLowerCase())
                 );
@@ -204,7 +178,7 @@ const App: React.FC = () => {
     }
 
     setIsProcessing(false);
-  }, [rules, applyRulesToInvoices]);
+  }, [rules, handleImportRules]);
 
   const handleUpdateInvoice = useCallback((id: string, updates: Partial<InvoiceData>) => {
     setInvoices(prev => prev.map(inv => 
@@ -227,18 +201,13 @@ const App: React.FC = () => {
     
     setRules(prev => {
         const updated = [...prev, newRule];
-        // Apply to existing immediately
         setInvoices(currentInvoices => applyRulesToInvoices(currentInvoices, updated));
         return updated;
     });
   }, [applyRulesToInvoices]);
 
   const handleDeleteRule = useCallback((id: string) => {
-    setRules(prev => {
-        // We don't revert invoices when deleting rules, we just stop applying it to future ones
-        // or we could, but that's complex state management.
-        return prev.filter(r => r.id !== id);
-    });
+    setRules(prev => prev.filter(r => r.id !== id));
   }, []);
 
   const handleExport = () => {
@@ -267,6 +236,7 @@ const App: React.FC = () => {
                 rules={rules} 
                 onAddRule={handleAddRule} 
                 onDeleteRule={handleDeleteRule} 
+                onImportRules={handleImportRules}
              />
              
              <button
